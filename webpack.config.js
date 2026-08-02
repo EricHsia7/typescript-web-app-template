@@ -1,86 +1,28 @@
 const path = require('path');
 const fs = require('fs');
 const webpack = require('webpack');
-const TerserPlugin = require('terser-webpack-plugin');
+const MinimizerPlugin = require('minimizer-webpack-plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
-const CssMinimizerPlugin = require('css-minimizer-webpack-plugin');
-const AdvancedPreset = require('cssnano-preset-advanced');
+const RemoveEmptyScriptsPlugin = require('webpack-remove-empty-scripts');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const WorkboxPlugin = require('workbox-webpack-plugin');
-const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
-const { execSync } = require('child_process');
-const MangleCssClassPlugin = require('mangle-css-class-webpack-plugin');
 const { SubresourceIntegrityPlugin } = require('webpack-subresource-integrity');
-
-async function makeDirectory(path) {
-  // Check if the path already exists
-  try {
-    await fs.promises.access(path);
-    // If there is no error, it means the path already exists
-    console.log('Given directory already exists!');
-  } catch (error) {
-    // If there is an error, it means the path does not exist
-    // Try to create the directory
-    try {
-      await fs.promises.mkdir(path, { recursive: true });
-      // If there is no error, log a success message
-      console.log('New directory created successfully!');
-    } catch (error) {
-      // If there is an error, log it
-      console.error(error);
-      process.exit(1);
-    }
-  }
-}
-
-async function createTextFile(filePath, data, encoding = 'utf-8') {
-  try {
-    await fs.promises.writeFile(filePath, data, { encoding });
-    return `Text file '${filePath}' has been created successfully with ${encoding} encoding!`;
-  } catch (err) {
-    throw new Error(`Error writing to file: ${err}`);
-  }
-}
-
-const workflowRunNumber = parseInt(execSync('echo $GITHUB_RUN_NUMBER').toString().trim());
-const commitHash = execSync('git rev-parse HEAD').toString().trim();
-const branchName = execSync('git branch --show-current').toString().trim();
-const thisVersion = {
-  build: workflowRunNumber,
-  hash: commitHash.substring(0, 7),
-  full_hash: commitHash,
-  branch_name: branchName,
-  timestamp: new Date().toISOString()
-};
-
-async function outputVersionJSON() {
-  await makeDirectory('dist');
-  await createTextFile('./dist/version.json', JSON.stringify(thisVersion, null, 2));
-}
-
-outputVersionJSON();
+const postcssColorMixFunction = require('@csstools/postcss-color-mix-function');
+const { Hasher } = require('./hasher');
+const { ErrorCodePlugin, PostCssOptimizationPlugin, BundleStatsMarkdownPlugin, MangleCssNamespacePlugin } = require('@erichsia7/webpack-plugins');
 
 module.exports = (env, argv) => {
-  const isProduction = argv.mode === 'production';
   return {
     plugins: [
+      new RemoveEmptyScriptsPlugin(),
       new MiniCssExtractPlugin({
-        filename: isProduction ? '[contenthash].css' : 'index.css'
-        // Output CSS filename
+        filename: '[contenthash].css',
+        runtime: false
       }),
-      new MangleCssClassPlugin({
-        classNameRegExp: '(css_|b-cssvar-)[a-z0-9_-]*',
+      new MangleCssNamespacePlugin({
+        prefixes: ['css_', 'app-css-', 'app-cssvar-'],
         mangleCssVariables: true,
-        /*ignorePrefix: [''],*/
-        log: false
-      }),
-      new webpack.DefinePlugin({
-        'process.env': {
-          HASH: JSON.stringify(thisVersion.hash),
-          FULL_HASH: JSON.stringify(thisVersion.full_hash),
-          BRANCH_NAME: JSON.stringify(thisVersion.branch_name),
-          TIME_STAMP: JSON.stringify(thisVersion.timestamp)
-        }
+        emitManifest: true
       }),
       new HtmlWebpackPlugin({
         template: './src/index.html', // Path to your custom HTML template file
@@ -89,7 +31,7 @@ module.exports = (env, argv) => {
           collapseWhitespace: true,
           keepClosingSlash: true,
           removeComments: true,
-          removeRedundantAttributes: true,
+          removeRedundantAttributes: false,
           removeScriptTypeAttributes: false,
           removeStyleLinkTypeAttributes: false,
           useShortDoctype: false,
@@ -99,9 +41,11 @@ module.exports = (env, argv) => {
       new WorkboxPlugin.GenerateSW({
         clientsClaim: true,
         skipWaiting: true,
-        exclude: [/\.map$/, /LICENSE\.txt$/],
+        exclude: [/\.map$/, /\.erm$/, /LICENSE\.txt$/, /css-mangle-manifest\.json$/],
         include: [/\.js|css|png$/, /index\.html$/],
-        cacheId: `app_name-${thisVersion.hash}`,
+        cacheId: 'app_name',
+        navigateFallback: './index.html',
+        navigateFallbackDenylist: [/\/[^\/]+\.(?!(html$))[^\/.]{0,}$/],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com/,
@@ -109,23 +53,35 @@ module.exports = (env, argv) => {
             options: {
               cacheName: 'google-fonts-stylesheets'
             }
+          },
+          {
+            urlPattern: /^https:\/\/fonts\.gstatic\.com/,
+            handler: 'StaleWhileRevalidate',
+            options: {
+              cacheName: 'google-fonts-resources'
+            }
+          },
+          {
+            urlPattern: /\/icons\/[a-z0-9\-]+\.png$/,
+            handler: 'StaleWhileRevalidate',
+            options: {
+              cacheName: 'icons'
+            }
           }
         ]
       }),
       new SubresourceIntegrityPlugin({
-        hashFuncNames: ['sha256', 'sha384'], // Hash algorithms you want to use
+        hashFuncNames: ['sha512'], // Hash algorithms
         enabled: true
       }),
-      new BundleAnalyzerPlugin({
-        analyzerMode: 'static', // Generate static HTML report
-        reportFilename: 'bundle-analysis-report/index.html' // Output file path and name
-      })
+      new BundleStatsMarkdownPlugin()
     ],
     target: ['web', 'es6'], // Target the browser environment (es6 is the default for browsers)
     mode: 'production', // Set the mode to 'production' or 'development'
     entry: './src/index.ts', // Entry point of your application
     output: {
-      filename: isProduction ? '[contenthash].js' : 'index.js', // Output bundle filename
+      filename: '[contenthash].js', // Output bundle filename
+      hashFunction: Hasher,
       path: path.resolve(__dirname, 'dist'), // Output directory for bundled files
       publicPath: './',
       crossOriginLoading: 'anonymous', // Required for SRI
@@ -144,8 +100,20 @@ module.exports = (env, argv) => {
           use: {
             loader: 'babel-loader',
             options: {
-              presets: ['@babel/preset-env', '@babel/preset-flow', 'babel-preset-modules', '@babel/preset-typescript'],
-              plugins: ['@babel/plugin-syntax-flow']
+              presets: [
+                [
+                  '@babel/preset-env',
+                  {
+                    modules: false,
+                    exclude: ['@babel/plugin-transform-regenerator', '@babel/plugin-transform-template-literals', '@babel/plugin-transform-for-of']
+                  }
+                ],
+                '@babel/preset-typescript'
+              ],
+              plugins: ['@babel/plugin-transform-runtime'],
+              assumptions: {
+                constantReexports: true
+              }
             }
           }
         },
@@ -160,21 +128,29 @@ module.exports = (env, argv) => {
       mainFields: ['browser', 'module', 'main']
     },
     optimization: {
-      minimize: isProduction,
+      minimize: true,
       minimizer: [
-        new TerserPlugin({
-          terserOptions: {
+        new ErrorCodePlugin(),
+        new MinimizerPlugin({
+          test: /\.[cm]?js(\?.*)?$/i,
+          minify: MinimizerPlugin.terserMinify,
+          extractComments: true,
+          minimizerOptions: {
             compress: {
-              drop_console: [/*'log',*/ 'assert', 'clear', 'count', 'countReset', 'debug', 'dir', 'dirxml', /* 'error',*/ 'group', 'groupCollapsed', 'groupEnd', 'info', 'profile', 'profileEnd', 'table', 'time', 'timeEnd', 'timeLog', 'timeStamp', 'trace', 'warn']
+              drop_console: [/* 'log', */ 'assert', 'clear', 'count', 'countReset', 'debug', 'dir', 'dirxml', 'error', 'group', 'groupCollapsed', 'groupEnd', 'info', 'profile', 'profileEnd', 'table', 'time', 'timeEnd', 'timeLog', 'timeStamp', 'trace', 'warn']
             }
           }
         }),
-        new CssMinimizerPlugin({
-          parallel: 4,
+        new PostCssOptimizationPlugin({
+          plugins: [postcssColorMixFunction({ preserve: false, enableProgressiveCustomProperties: false })]
+        }),
+        new MinimizerPlugin({
+          test: /\.css(\?.*)?$/i,
+          minify: MinimizerPlugin.cssnanoMinify,
+          parallel: true,
           minimizerOptions: {
             preset: [
               'default',
-              AdvancedPreset,
               {
                 discardComments: { removeAll: true }
               }
@@ -187,21 +163,24 @@ module.exports = (env, argv) => {
         minSize: 25000,
         maxSize: 51200,
         cacheGroups: {
-          // Define your cache groups here with specific rules
           default: {
             minChunks: 1,
             priority: -20,
             reuseExistingChunk: true
           }
-          // Add more cache groups if needed
         }
-      }
+      },
+      avoidEntryIife: true,
+      chunkIds: 'deterministic',
+      concatenateModules: true,
+      innerGraph: true,
+      mangleExports: 'size',
+      usedExports: true
     },
     devtool: 'source-map',
     devServer: {
       contentBase: path.join(__dirname, 'dist'),
       hot: false
     }
-    // Add any additional plugins and configurations as needed
   };
 };

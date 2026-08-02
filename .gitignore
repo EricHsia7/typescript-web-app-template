@@ -1,0 +1,12 @@
+node_modules
+package-lock.json
+.DS_Store
+**/.DS_Store
+**/*.pbf
+*.pbf
+chunks
+tiles
+output/tiles
+__pycache__
+log.txt
+labels
